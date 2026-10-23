@@ -1,6 +1,6 @@
 // Halo Go — offline voice AI that runs entirely on an iPhone (Safari / iOS 26+, WebGPU).
 // Ears: Whisper (transformers.js, in a worker)  Brain: WebLLM (WebGPU, in a worker)  Voice: iOS speech.
-const VERSION = "1.0.2";
+const VERSION = "1.0.3";
 const WEBLLM = "https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.85/+esm";
 const DEMO = new URLSearchParams(location.search).has("demo");
 
@@ -14,10 +14,13 @@ const MODELS = [
   { key: "big", name: "Smartest", desc: "Llama 3.2 3B · about 2.3 GB · may be too big for an iPhone 14",
     f16: "Llama-3.2-3B-Instruct-q4f16_1-MLC", f32: "Llama-3.2-3B-Instruct-q4f32_1-MLC", gb: 2.3 },
 ];
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 const EARS = [
-  { id: "Xenova/whisper-tiny.en", name: "Quick", desc: "Whisper tiny · about 40 MB" },
-  { id: "Xenova/whisper-base.en", name: "Accurate", desc: "Whisper base · about 80 MB" },
+  { id: "Xenova/whisper-tiny.en", name: "Quick", desc: "Whisper tiny · about 40 MB · fully offline" },
+  { id: "Xenova/whisper-base.en", name: "Accurate", desc: "Whisper base · about 80 MB · fully offline" },
+  ...(SR ? [{ id: "dictation", name: "iPhone dictation", desc: "Apple's own speech recognition · lightest on memory · may use the internet" }] : []),
 ];
+const useDict = () => S.ears === "dictation" && !!SR;
 const DEFAULT_PROMPT = "You are Halo Go, a calm, friendly and clever voice assistant that runs entirely on the user's iPhone, with no internet. Keep answers short and natural to listen to, usually one to three sentences. Speak in plain sentences: no lists, markdown or emoji unless asked. If you're not sure, say so.";
 
 const $ = (id) => document.getElementById(id);
@@ -73,7 +76,10 @@ function setState(s, label) {
   $("stateLabel").textContent = label || L[s] || "";
   $("talkBtn").classList.toggle("active", s === "listening");
   // Give the speaker back to the voice while Halo talks; listen again afterwards
-  if (s === "idle" || s === "listening") ensureMic(); else if (s === "thinking" || s === "speaking") releaseMic();
+  if (useDict()) {
+    releaseMic();
+    if (s === "idle" && S.mode === "hf" && ctx) setTimeout(() => { if (state === "idle" && S.mode === "hf" && !dict) dictStart(); }, 500);
+  } else if (s === "idle" || s === "listening") ensureMic(); else if (s === "thinking" || s === "speaking") releaseMic();
 }
 const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 function render(t) {
@@ -139,6 +145,7 @@ async function brainCached(key) {
 // ---------------- Ears (Whisper in a worker) ----------------
 function startEars(onProgress) {
   if (DEMO) return fakeProgress(onProgress, 600);
+  if (useDict()) { onProgress && onProgress(1, 0); return Promise.resolve(); }   // nothing to load
   return new Promise((resolve, reject) => {
     sttWorker = new Worker(new URL("./stt-worker.js", import.meta.url), { type: "module" });
     sttWorker.onmessage = (e) => {
@@ -221,7 +228,8 @@ function stopRec(send) {
   if (!send || n < ctx.sampleRate * 0.35) { setState("idle"); return; }
   const audio = to16k(chunks, n, ctx.sampleRate);
   setState("transcribing");
-  transcribe(audio).then((text) => {
+  ls.set("phase", { what: "ears", key: S.ears });
+  transcribe(audio).finally(() => ls.set("phase", null)).then((text) => {
     if (!text) { setState("idle", "Didn't catch that"); setTimeout(() => state === "idle" && setState("idle"), 1500); return; }
     send_(text);
   }).catch((e) => { err("Couldn't understand the audio: " + e.message); setState("idle"); });
@@ -261,6 +269,7 @@ async function send_(text) {
       if (first >= 0) msgs[first] = { role: "user", content: sys + "\n\n" + msgs[first].content };
       while (msgs.length && msgs[0].role !== "user") msgs.shift();
     } else msgs = [{ role: "system", content: sys }, ...msgs];
+    ls.set("phase", { what: "brain", key: S.model });
     const chunks = await engine.chat.completions.create({ messages: msgs, stream: true, temperature: 0.7, max_tokens: 320 });
     for await (const c of chunks) {
       if (id !== replyId) break;
@@ -281,6 +290,7 @@ async function send_(text) {
     if (!full) b.remove();
     err("The brain hit a problem: " + (e.message || e));
   } finally {
+    ls.set("phase", null);
     generating = false;
     if (id === replyId && speakQueue === 0) setState("idle");
   }
@@ -335,16 +345,43 @@ function animate() {
   requestAnimationFrame(animate);
 }
 
+// ---------------- iPhone dictation (Apple speech recognition) ----------------
+let dict = null, dictText = "", dictCancel = false;
+function dictStart() {
+  if (!SR || dict) return;
+  dictText = ""; dictCancel = false;
+  try { if (navigator.audioSession) navigator.audioSession.type = "play-and-record"; } catch {}
+  const r = new SR();
+  r.lang = "en-US"; r.interimResults = true;
+  r.continuous = S.mode !== "hf";            // push to talk: keep listening until you let go
+  r.onresult = (e) => {
+    let t = ""; for (let i = 0; i < e.results.length; i++) t += e.results[i][0].transcript;
+    dictText = t; pulse(); micLevel = 0.06;
+    if (t.trim()) $("stateLabel").textContent = "“" + t.trim().slice(-48) + "”";
+  };
+  r.onerror = (e) => { if (!["no-speech", "aborted"].includes(e.error)) err("Dictation problem: " + e.error + (e.error === "not-allowed" ? " (allow Speech Recognition for Safari in iPhone Settings)" : "")); };
+  r.onend = () => {
+    dict = null; micLevel = 0;
+    const t = dictText.trim();
+    if (dictCancel) return;
+    if (t) send_(t); else setState("idle");
+  };
+  dict = r;
+  try { r.start(); setState("listening"); } catch (e) { dict = null; err("Couldn't start dictation: " + e.message); }
+}
+function dictStop(cancel = false) { if (!dict) return; dictCancel = cancel; try { cancel ? dict.abort() : dict.stop(); } catch {} }
+
 // ---------------- Controls ----------------
 async function pttDown(e) {
   e && e.preventDefault();
   if (state === "off" || state === "loading" || pttHeld) return;
   pttHeld = true;
   if (state === "speaking" || state === "thinking") stopReply();
+  if (useDict()) { dictStop(true); setTimeout(() => pttHeld && dictStart(), 60); return; }
   await ensureMic();
   if (pttHeld) { hf.on = false; startRec(); }
 }
-function pttUp() { if (!pttHeld) return; pttHeld = false; stopRec(true); }
+function pttUp() { if (!pttHeld) return; pttHeld = false; if (useDict()) { dictStop(); return; } stopRec(true); }
 const tb = $("talkBtn");
 tb.addEventListener("pointerdown", (e) => { tb.setPointerCapture?.(e.pointerId); pttDown(e); });
 tb.addEventListener("pointerup", pttUp);
@@ -361,6 +398,7 @@ function setMode(m, persist = true) {
   $("talkTxt").textContent = m === "hf" ? "Hands-free on · hold to talk anyway" : "Hold to talk";
   tb.classList.toggle("hf", m === "hf");
   hf.on = false;
+  dictStop(true);
   if (state === "idle") setState("idle");
 }
 $("modePtt").onclick = () => setMode("ptt");
@@ -405,7 +443,7 @@ async function refreshSheet() {
     const persisted = await navigator.storage.persisted?.();
     $("storageInfo").textContent = `Using ${(est.usage / 1e9).toFixed(2)} GB on this iPhone.` + (persisted ? " Protected from automatic clean-up." : "");
   } catch { $("storageInfo").textContent = ""; }
-  $("about").textContent = `Halo Go ${VERSION} · runs fully on this iPhone (WebGPU${hasF16 ? ", f16" : ""}). Ears: Whisper · Brain: ${engineModel || "not loaded"} · Voice: iOS.`;
+  $("about").textContent = `Halo Go ${VERSION} · runs fully on this iPhone (WebGPU${hasF16 ? ", f16" : ""}). Ears: ${useDict() ? "iPhone dictation" : "Whisper"} · Brain: ${engineModel || "not loaded"} · Voice: iOS.`;
 }
 function fillVoices() {
   const vs = ("speechSynthesis" in window ? speechSynthesis.getVoices() : []).filter((v) => /^en/i.test(v.lang));
@@ -459,10 +497,18 @@ async function switchEars(id) {
   save("ears", id);
   closeSheet();
   if (DEMO) { note("Ears switched."); return; }
+  dictStop(true);
+  if (id === "dictation") {
+    if (sttWorker) { sttWorker.terminate(); sttWorker = null; }   // give Whisper's memory back
+    note("Switched to iPhone dictation. The first time, iOS asks to allow Speech Recognition.");
+    setState("idle");
+    return;
+  }
   setState("loading", "Loading ears…");
-  sttWorker.postMessage({ type: "load", id });
-  note("Switching ears — the first time it downloads a little.");
-  setTimeout(() => state === "loading" && setState("idle"), 1500);
+  if (!sttWorker) { try { await startEars(); } catch (e) { err("Couldn't load the ears: " + e.message); } }
+  else sttWorker.postMessage({ type: "load", id });
+  note("Switched ears. The first time it downloads a little.");
+  setState("idle");
 }
 
 // ---------------- Updates (service worker) ----------------
@@ -530,6 +576,27 @@ async function checkDevice() {
     return false;
   }
   // Did the last launch run out of memory loading a big brain?
+  const phase = ls.get("phase", null);
+  if (phase && phase.what) {
+    ls.set("phase", null);
+    if (phase.what === "ears" && SR && S.ears !== "dictation") {
+      save("ears", "dictation");
+      box.innerHTML = "Safari closed Halo Go while it was turning your speech into text (the iPhone ran low on memory). " +
+        "Halo Go switched its ears to <b>iPhone dictation</b>, which uses much less memory. You can change this in Settings.";
+      return true;
+    }
+    if (phase.what === "brain") {
+      const order = ["big", "balanced", "quick", "tiny"];
+      const next = order[Math.min(order.length - 1, order.indexOf(phase.key) + 1)] || "tiny";
+      if (phase.key !== "tiny") {
+        save("model", next);
+        if (SR && S.ears !== "dictation") save("ears", "dictation");
+        box.innerHTML = `Safari closed Halo Go while the <b>${modelInfo(phase.key).name}</b> brain was answering (the iPhone ran low on memory). ` +
+          `Halo Go switched to the <b>${modelInfo(next).name}</b> brain${SR ? " and iPhone dictation" : ""} to use less memory. You can change these in Settings.`;
+        return true;
+      }
+    }
+  }
   let crashed = ls.get("loading", null);
   if (typeof crashed === "string") crashed = { key: crashed, step: "loading", pct: 0 };
   if (crashed && crashed.key) {
