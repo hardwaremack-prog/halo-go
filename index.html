@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#06080e">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Halo Go">
+<meta name="description" content="Offline voice AI that runs entirely on your iPhone">
+<title>Halo Go</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- Welcome / first-time setup -->
+<section id="gate" class="gate">
+  <div class="gate-inner">
+    <div class="gate-ring"></div>
+    <h1>Halo Go</h1>
+    <p class="lead">A voice AI that runs entirely on this iPhone. No internet once it's set up.</p>
+
+    <div id="gateCheck" class="gate-note"></div>
+
+    <div id="gateHome" class="gate-note" style="display:none">
+      <strong>Tip:</strong> add Halo Go to your Home Screen first. In Safari tap
+      <span class="share-ico" aria-label="Share"></span> then <em>Add to Home Screen</em>, and open it from there.
+      (The Home Screen app keeps its own downloads.)
+    </div>
+
+    <div id="dlBox" class="dl" style="display:none">
+      <div class="dl-row"><span>Brain</span><span id="dlBrainTxt">waiting</span></div>
+      <div class="bar"><div id="dlBrain"></div></div>
+      <div class="dl-row"><span>Ears</span><span id="dlEarsTxt">waiting</span></div>
+      <div class="bar"><div id="dlEars"></div></div>
+      <p class="fine" id="dlNote">First time only: about 1 GB. Use Wi-Fi and keep the screen on.</p>
+    </div>
+
+    <button id="startBtn" class="btn-primary" disabled>Checking this iPhone…</button>
+    <p class="fine">Put on your headset for the best experience.</p>
+  </div>
+</section>
+
+<header class="top">
+  <div class="brand"><span class="brand-mark"></span>Halo Go</div>
+  <button id="updChip" class="chip" style="display:none">Update ready</button>
+  <button class="icon-btn" id="newChat" aria-label="New chat"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
+  <button class="icon-btn" id="gear" aria-label="Settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button>
+</header>
+
+<main class="stage">
+  <div class="presence">
+    <div id="avatar" class="avatar state-idle">
+      <svg viewBox="0 0 200 200" aria-hidden="true">
+        <defs>
+          <linearGradient id="hg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#5ee7ff"/><stop offset="1" stop-color="#9b7bff"/></linearGradient>
+          <filter id="glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="6" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+        </defs>
+        <circle class="ring-track" cx="100" cy="100" r="70"/>
+        <circle class="ring" cx="100" cy="100" r="70" stroke="url(#hg)" filter="url(#glow)"/>
+        <circle class="arc" cx="100" cy="100" r="84" stroke="url(#hg)"/>
+        <circle class="core" cx="100" cy="100" r="44"/>
+      </svg>
+    </div>
+    <div class="state" id="stateLabel">Ready</div>
+    <div class="meter"><div id="micMeter"></div><i id="micThr"></i></div>
+  </div>
+  <div class="transcript" id="transcript" aria-live="polite">
+    <div class="empty" id="empty">Hold the button and talk, or switch to <em>Hands-free</em>.</div>
+  </div>
+</main>
+
+<footer class="dock">
+  <div class="row">
+    <div class="mode" role="radiogroup" aria-label="Talk mode">
+      <button id="modePtt" aria-checked="true">Push to talk</button>
+      <button id="modeHf" aria-checked="false">Hands-free</button>
+    </div>
+    <button class="icon-btn stop" id="stopBtn" aria-label="Stop"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></svg></button>
+  </div>
+  <button id="talkBtn" class="talk"><svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg><span id="talkTxt">Hold to talk</span></button>
+  <form id="typeForm" class="type" autocomplete="off">
+    <input id="typeBox" placeholder="…or type" enterkeyhint="send">
+    <button class="icon-btn" aria-label="Send"><svg viewBox="0 0 24 24"><path d="M4 12l16-8-6 16-2.5-6.5z"/></svg></button>
+  </form>
+</footer>
+
+<div class="scrim" id="scrim"></div>
+<aside class="sheet" id="sheet" aria-hidden="true">
+  <div class="sheet-head"><h2>Settings</h2><button class="icon-btn" id="closeSheet" aria-label="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
+
+  <h3>Brain</h3>
+  <div id="modelList" class="choices"></div>
+  <p class="fine" id="modelNote"></p>
+
+  <h3>Ears</h3>
+  <div id="earsList" class="choices"></div>
+
+  <h3>Voice</h3>
+  <label>Voice<select id="voiceSel"></select></label>
+  <label>Speaking speed <span class="val" id="speedVal"></span><input type="range" id="speed" min="0.7" max="1.4" step="0.05"></label>
+  <label class="switch"><input type="checkbox" id="speak"> Read replies out loud</label>
+  <p class="fine">Nicer voices: iPhone Settings → Accessibility → Spoken Content → Voices → English → download an "Enhanced" or "Premium" voice.</p>
+
+  <h3>Hands-free</h3>
+  <label>Sensitivity <span class="val" id="thrVal"></span><input type="range" id="thr" min="0.004" max="0.12" step="0.002"></label>
+  <label>Wait after you stop talking <span class="val" id="silVal"></span><input type="range" id="sil" min="400" max="2500" step="100"></label>
+
+  <h3>Personality</h3>
+  <textarea id="sysPrompt" rows="5"></textarea>
+  <button class="btn-secondary" id="savePrompt">Save personality</button>
+
+  <h3>Storage</h3>
+  <p class="fine" id="storageInfo">Checking…</p>
+  <button class="btn-secondary danger" id="clearModels">Delete downloaded brains &amp; ears</button>
+
+  <h3>About</h3>
+  <p class="fine" id="about"></p>
+</aside>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
