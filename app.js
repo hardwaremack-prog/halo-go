@@ -1,6 +1,6 @@
 // Halo Go — offline voice AI that runs entirely on an iPhone (Safari / iOS 26+, WebGPU).
 // Ears: Whisper (transformers.js, in a worker)  Brain: WebLLM (WebGPU, in a worker)  Voice: iOS speech.
-const VERSION = "1.0.7";
+const VERSION = "1.0.8";
 const WEBLLM = "https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.85/+esm";
 const DEMO = new URLSearchParams(location.search).has("demo");
 
@@ -331,7 +331,7 @@ function say(text, id) {
   const clean = text.replace(/[*_#`>~|]/g, "").replace(/https?:\/\/\S+/g, "a link").trim();
   if (!clean.replace(/[^\p{L}\p{N}]/gu, "") || !("speechSynthesis" in window)) return;
   const u = new SpeechSynthesisUtterance(clean);
-  const v = speechSynthesis.getVoices().find((x) => x.voiceURI === S.voice);
+  const v = speechSynthesis.getVoices().find((x) => x.voiceURI === S.voice) || goodVoices()[0];
   if (v) u.voice = v;
   u.rate = S.speed; u.lang = v ? v.lang : "en-US";
   speakQueue++;
@@ -463,16 +463,29 @@ async function refreshSheet() {
   } catch { $("storageInfo").textContent = ""; }
   $("about").textContent = `Halo Go ${VERSION} · runs fully on this iPhone (WebGPU${hasF16 ? ", f16" : ""}). Ears: ${useDict() ? "iPhone dictation" : "Whisper"} · Brain: ${engineModel || "not loaded"} · Voice: iOS.`;
 }
+// Apple ships joke voices (Albert, Bad News, Zarvox…); never pick those
+const NOVELTY = /^(albert|bad news|bahh|bells|boing|bubbles|cellos|good news|jester|organ|superstar|trinoids|whisper|wobble|zarvox|fred|junior|kathy|ralph|grandma|grandpa|eddy|flo|reed|rocko|sandy|shelley)\b/i;
+const NICE = ["ava", "zoe", "samantha", "evan", "nathan", "joelle", "noelle", "allison", "susan", "tom", "serena", "karen", "daniel", "moira", "tessa"];
+function voiceRank(v) {
+  const q = /premium/i.test(v.name) ? 0 : /enhanced/i.test(v.name) ? 1 : 2;
+  const base = v.name.toLowerCase().replace(/\s*\(.*\)/, "").trim();
+  const nice = NICE.indexOf(base);
+  return q * 100 + (nice < 0 ? 50 : nice) + (/^en-us/i.test(v.lang) ? 0 : 20);
+}
+function goodVoices() {
+  return ("speechSynthesis" in window ? speechSynthesis.getVoices() : [])
+    .filter((v) => /^en/i.test(v.lang) && !NOVELTY.test(v.name) && !/eloquence/i.test(v.voiceURI))
+    .sort((a, b) => voiceRank(a) - voiceRank(b) || a.name.localeCompare(b.name));
+}
 function fillVoices() {
-  const vs = ("speechSynthesis" in window ? speechSynthesis.getVoices() : []).filter((v) => /^en/i.test(v.lang));
+  const vs = goodVoices();
   const sel = $("voiceSel");
-  const rank = (v) => (/premium/i.test(v.name) ? 0 : /enhanced/i.test(v.name) ? 1 : 2);
-  vs.sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
+  // Replace a creepy voice picked by an older version
+  if (vs[0] && (!S.voice || !vs.some((v) => v.voiceURI === S.voice) || !ls.get("voice_v2", false))) { save("voice", vs[0].voiceURI); ls.set("voice_v2", true); }
   sel.innerHTML = vs.map((v) => `<option value="${esc(v.voiceURI)}" ${v.voiceURI === S.voice ? "selected" : ""}>${esc(v.name)} (${esc(v.lang)})</option>`).join("") || "<option>Default voice</option>";
-  if (!S.voice && vs[0]) save("voice", vs[0].voiceURI);
 }
 if ("speechSynthesis" in window) speechSynthesis.onvoiceschanged = () => fillVoices();
-$("voiceSel").onchange = (e) => { save("voice", e.target.value); sample(); };
+$("voiceSel").onchange = (e) => { save("voice", e.target.value); ls.set("voice_v2", true); sample(); };
 $("speed").oninput = (e) => { $("speedVal").textContent = (+e.target.value).toFixed(2) + "×"; };
 $("speed").onchange = (e) => { save("speed", +e.target.value); sample(); };
 $("speak").onchange = (e) => save("speak", e.target.checked);
@@ -660,6 +673,7 @@ $("resetBtn").onclick = resetEverything;
 async function boot() {
   $("verLabel").textContent = "Halo Go " + VERSION;
   renderHistory();
+  try { fillVoices(); } catch {}
   setMode(S.mode, false);
   requestAnimationFrame(animate);
   const ok = await checkDevice();
