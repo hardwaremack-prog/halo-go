@@ -1,13 +1,13 @@
 // Halo Go service worker: makes the app work offline and handles updates.
-const VERSION = "1.0.0";
+const VERSION = "1.0.1";
 const APP = "halo-go-app-" + VERSION;
 const LIBS = "halo-go-libs";
 const SHELL = ["./", "index.html", "style.css", "app.js", "llm-worker.js", "stt-worker.js",
   "manifest.webmanifest", "icons/apple-touch-icon.png", "icons/icon-192.png", "icons/icon-512.png"];
 
 self.addEventListener("install", (e) => {
-  e.waitUntil(caches.open(APP).then((c) => c.addAll(SHELL)));
-  // The new version waits until the user taps "Update ready" (or closes the app)
+  // Take over right away; the page reloads itself when it's safe (not mid-conversation)
+  e.waitUntil(caches.open(APP).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
 });
 
 self.addEventListener("activate", (e) => {

@@ -1,6 +1,6 @@
 // Halo Go — offline voice AI that runs entirely on an iPhone (Safari / iOS 26+, WebGPU).
 // Ears: Whisper (transformers.js, in a worker)  Brain: WebLLM (WebGPU, in a worker)  Voice: iOS speech.
-const VERSION = "1.0.0";
+const VERSION = "1.0.1";
 const WEBLLM = "https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.85/+esm";
 const DEMO = new URLSearchParams(location.search).has("demo");
 
@@ -52,6 +52,13 @@ let micLevel = 0;
 let replyId = 0, generating = false;
 let speakQueue = 0;
 
+// Safari can't read back WebLLM's default (Cache API) storage for Hugging Face files,
+// so keep the brain in IndexedDB instead.
+let appConfig = null;
+async function getAppConfig() {
+  if (!appConfig) { const webllm = await import(WEBLLM); appConfig = { ...webllm.prebuiltAppConfig, cacheBackend: "indexeddb" }; }
+  return appConfig;
+}
 const modelInfo = (key) => MODELS.find((m) => m.key === key) || MODELS[0];
 const modelId = (key) => { const m = modelInfo(key); return hasF16 ? m.f16 : m.f32; };
 
@@ -97,7 +104,7 @@ async function loadBrain(key, onProgress) {
   try {
     if (!engine) {
       const w = new Worker(new URL("./llm-worker.js", import.meta.url), { type: "module" });
-      engine = await webllm.CreateWebWorkerMLCEngine(w, id, { initProgressCallback: cb });
+      engine = await webllm.CreateWebWorkerMLCEngine(w, id, { initProgressCallback: cb, appConfig: await getAppConfig() });
     } else {
       engine.setInitProgressCallback?.(cb);
       await engine.reload(id);
@@ -109,7 +116,7 @@ async function loadBrain(key, onProgress) {
 }
 async function brainCached(key) {
   if (DEMO) return ls.get("demo_cached", false);
-  try { const webllm = await import(WEBLLM); return await webllm.hasModelInCache(modelId(key)); } catch { return false; }
+  try { const webllm = await import(WEBLLM); return await webllm.hasModelInCache(modelId(key), await getAppConfig()); } catch { return false; }
 }
 
 // ---------------- Ears (Whisper in a worker) ----------------
@@ -403,6 +410,9 @@ $("clearModels").onclick = async () => {
   stopReply();
   const keys = await caches.keys();
   for (const k of keys) if (!k.startsWith("halo-go-")) await caches.delete(k);
+  for (const db of ["webllm/model", "webllm/config", "webllm/wasm"]) {
+    await new Promise((r) => { const q = indexedDB.deleteDatabase(db); q.onsuccess = q.onerror = q.onblocked = () => r(); });
+  }
   note("Deleted the downloaded brains and ears. Halo Go will download what it needs next time.");
   setTimeout(() => location.reload(), 1500);
 };
@@ -440,7 +450,11 @@ async function switchEars(id) {
 
 // ---------------- Updates (service worker) ----------------
 let waitingSW = null;
-function showUpdate(w) { waitingSW = w; $("updChip").style.display = ""; }
+function showUpdate(w) {
+  waitingSW = w;
+  if (!$("gate").classList.contains("hidden") || state === "off") { w.postMessage("skipWaiting"); return; }
+  $("updChip").style.display = "";
+}
 $("updChip").onclick = () => { if (waitingSW) waitingSW.postMessage("skipWaiting"); };
 if ("serviceWorker" in navigator && !DEMO) {
   navigator.serviceWorker.register("sw.js").then((reg) => {
@@ -454,7 +468,11 @@ if ("serviceWorker" in navigator && !DEMO) {
     if (navigator.onLine) reg.update().catch(() => {});
   }).catch(() => {});
   let reloading = false;
-  navigator.serviceWorker.addEventListener("controllerchange", () => { if (!reloading) { reloading = true; location.reload(); } });
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (reloading) return;
+    if (!$("gate").classList.contains("hidden")) { reloading = true; location.reload(); }   // safe: not chatting yet
+    else { $("updChip").style.display = ""; $("updChip").onclick = () => location.reload(); }  // let the user choose
+  });
 }
 
 // ---------------- Demo mode (for testing without WebGPU) ----------------
