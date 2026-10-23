@@ -1,8 +1,8 @@
 // Halo Go service worker: makes the app work offline and handles updates.
-const VERSION = "1.0.5";
+const VERSION = "1.0.6";
 const APP = "halo-go-app-" + VERSION;
 const LIBS = "halo-go-libs";
-const SHELL = ["./", "index.html", "style.css", "app.js", "llm-worker.js", "stt-worker.js",
+const SHELL = ["./", "index.html", "style.css", "app.js", "llm-worker.js", "safe-store.js", "stt-worker.js",
   "manifest.webmanifest", "icons/apple-touch-icon.png", "icons/icon-192.png", "icons/icon-512.png"];
 
 self.addEventListener("install", (e) => {

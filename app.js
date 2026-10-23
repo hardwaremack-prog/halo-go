@@ -1,6 +1,6 @@
 // Halo Go — offline voice AI that runs entirely on an iPhone (Safari / iOS 26+, WebGPU).
 // Ears: Whisper (transformers.js, in a worker)  Brain: WebLLM (WebGPU, in a worker)  Voice: iOS speech.
-const VERSION = "1.0.5";
+const VERSION = "1.0.6";
 const WEBLLM = "https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.85/+esm";
 const DEMO = new URLSearchParams(location.search).has("demo");
 
@@ -59,10 +59,10 @@ let speakQueue = 0;
 
 // Where the brain is kept on the iPhone. Safari can't read back WebLLM's default Cache API
 // entries, and its IndexedDB fails on files this big, so use the page's private file storage
-// (OPFS), written a piece at a time from the worker.
+// (OPFS). The worker wraps it (safe-store.js): if Safari refuses to save, the brain is kept in memory.
 let appConfig = null;
 async function getAppConfig() {
-  if (!appConfig) { const webllm = await import(WEBLLM); appConfig = { ...webllm.prebuiltAppConfig, cacheBackend: "opfs", opfsAccessMode: "auto" }; }
+  if (!appConfig) { const webllm = await import(WEBLLM); appConfig = { ...webllm.prebuiltAppConfig, cacheBackend: "opfs", opfsAccessMode: "async" }; }
   return appConfig;
 }
 const OLD_STORES = ["webllm/model", "webllm/config", "webllm/wasm"];
@@ -677,6 +677,7 @@ async function start() {
   const btn = $("startBtn");
   btn.disabled = true;
   starting = true;
+  let failedPart = "";
   // These must happen right inside the tap (iOS rules for sound and microphone)
   ctx = new (window.AudioContext || window.webkitAudioContext)();
   if ("speechSynthesis" in window) { const u = new SpeechSynthesisUtterance(" "); u.volume = 0; speechSynthesis.speak(u); }
@@ -688,8 +689,11 @@ async function start() {
   try {
     await micReady;
     // One at a time keeps the iPhone's memory use lower
+    failedPart = "brain";
     await loadBrain(S.model, (p, text) => bar("dlBrain", p, p >= 1 ? "ready" : `${shortStep(text)}… ${Math.round(p * 100)}%`));
     bar("dlBrain", 1, "ready");
+    const saved = DEMO || (await brainCached(S.model));
+    failedPart = "ears";
     await startEars((p, total) => bar("dlEars", p, p >= 1 ? "ready" : total ? `${Math.round(p * 100)}% of ${(total / 1e6).toFixed(0)} MB` : "starting…"));
     bar("dlEars", 1, "ready"); bar("dlBrain", 1, "ready");
     if (DEMO) ls.set("demo_cached", true);
@@ -697,6 +701,7 @@ async function start() {
     starting = false;
     setState("idle");
     if (!history.length) note(`Ready · ${modelInfo(S.model).name} brain · everything runs on this iPhone`);
+    if (!saved) note("Safari wouldn't let Halo Go save the brain on this iPhone, so it's running from memory this time. It will download again next launch. Freeing up iPhone storage usually fixes this.");
   } catch (e) {
     starting = false;
     btn.disabled = false;
@@ -706,7 +711,7 @@ async function start() {
     storageLine().then((t) => { if (t) $("verLabel").textContent = `Halo Go ${VERSION} · ${t}`; });
     $("dlNote").textContent = /quota|space|Indexed Database|NotReadable|NoModificationAllowed/i.test(msg)
       ? "The iPhone couldn't save the download (" + msg + "). Check there's at least 2 GB free in Settings → General → iPhone Storage, then try again."
-      : "Something went wrong: " + msg + ". Check Wi-Fi for the first download, then try again.";
+      : `Something went wrong${failedPart ? " loading the " + failedPart : ""}: ${msg}. Check Wi-Fi for the first download, then try again.`;
   }
 }
 
