@@ -1,6 +1,6 @@
 // Halo Go — offline voice AI that runs entirely on an iPhone (Safari / iOS 26+, WebGPU).
 // Ears: Whisper (transformers.js, in a worker)  Brain: WebLLM (WebGPU, in a worker)  Voice: iOS speech.
-const VERSION = "1.0.3";
+const VERSION = "1.0.4";
 const WEBLLM = "https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.85/+esm";
 const DEMO = new URLSearchParams(location.search).has("demo");
 
@@ -57,12 +57,30 @@ let micLevel = 0;
 let replyId = 0, generating = false;
 let speakQueue = 0;
 
-// Safari can't read back WebLLM's default (Cache API) storage for Hugging Face files,
-// so keep the brain in IndexedDB instead.
+// Where the brain is kept on the iPhone. Safari can't read back WebLLM's default Cache API
+// entries, and its IndexedDB fails on files this big, so use the page's private file storage
+// (OPFS), written a piece at a time from the worker.
 let appConfig = null;
 async function getAppConfig() {
-  if (!appConfig) { const webllm = await import(WEBLLM); appConfig = { ...webllm.prebuiltAppConfig, cacheBackend: "indexeddb" }; }
+  if (!appConfig) { const webllm = await import(WEBLLM); appConfig = { ...webllm.prebuiltAppConfig, cacheBackend: "opfs", opfsAccessMode: "auto" }; }
   return appConfig;
+}
+const OLD_STORES = ["webllm/model", "webllm/config", "webllm/wasm"];
+async function deleteIDB(names) {
+  for (const db of names) await new Promise((r) => { try { const q = indexedDB.deleteDatabase(db); q.onsuccess = q.onerror = q.onblocked = () => r(); } catch { r(); } });
+}
+async function clearOldBrainCopies() {
+  // Earlier versions kept the brain in Cache API / IndexedDB; free that space once
+  if (ls.get("old_stores_cleared", false)) return;
+  try { for (const k of await caches.keys()) if (k.startsWith("webllm/")) await caches.delete(k); } catch {}
+  await deleteIDB(OLD_STORES);
+  ls.set("old_stores_cleared", true);
+}
+async function clearOPFS() {
+  try {
+    const root = await navigator.storage.getDirectory();
+    for await (const name of root.keys()) await root.removeEntry(name, { recursive: true });
+  } catch {}
 }
 const modelInfo = (key) => MODELS.find((m) => m.key === key) || MODELS[0];
 const modelId = (key) => { const m = modelInfo(key); return hasF16 ? m.f16 : m.f32; };
@@ -465,9 +483,8 @@ $("clearModels").onclick = async () => {
   stopReply();
   const keys = await caches.keys();
   for (const k of keys) if (!k.startsWith("halo-go-")) await caches.delete(k);
-  for (const db of ["webllm/model", "webllm/config", "webllm/wasm"]) {
-    await new Promise((r) => { const q = indexedDB.deleteDatabase(db); q.onsuccess = q.onerror = q.onblocked = () => r(); });
-  }
+  await deleteIDB(OLD_STORES);
+  await clearOPFS();
   note("Deleted the downloaded brains and ears. Halo Go will download what it needs next time.");
   setTimeout(() => location.reload(), 1500);
 };
@@ -624,6 +641,7 @@ async function boot() {
   setMode(S.mode, false);
   requestAnimationFrame(animate);
   const ok = await checkDevice();
+  if (ok && !DEMO) await clearOldBrainCopies();
   const btn = $("startBtn");
   if (!ok) { btn.textContent = "Not supported here"; return; }
   const cached = await brainCached(S.model);
@@ -661,7 +679,10 @@ async function start() {
     starting = false;
     btn.disabled = false;
     btn.textContent = "Try again";
-    $("dlNote").textContent = "Something went wrong: " + (e.message || e) + ". Check Wi-Fi for the first download, then try again.";
+    const msg = String(e.message || e);
+    $("dlNote").textContent = /quota|space|Indexed Database|NotReadable|NoModificationAllowed/i.test(msg)
+      ? "The iPhone couldn't save the download (" + msg + "). Check there's at least 2 GB free in Settings → General → iPhone Storage, then try again."
+      : "Something went wrong: " + msg + ". Check Wi-Fi for the first download, then try again.";
   }
 }
 
