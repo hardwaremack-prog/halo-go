@@ -1,5 +1,5 @@
 // Halo Go service worker: makes the app work offline and handles updates.
-const VERSION = "1.0.4";
+const VERSION = "1.0.5";
 const APP = "halo-go-app-" + VERSION;
 const LIBS = "halo-go-libs";
 const SHELL = ["./", "index.html", "style.css", "app.js", "llm-worker.js", "stt-worker.js",

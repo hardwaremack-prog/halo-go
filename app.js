@@ -1,6 +1,6 @@
 // Halo Go — offline voice AI that runs entirely on an iPhone (Safari / iOS 26+, WebGPU).
 // Ears: Whisper (transformers.js, in a worker)  Brain: WebLLM (WebGPU, in a worker)  Voice: iOS speech.
-const VERSION = "1.0.4";
+const VERSION = "1.0.5";
 const WEBLLM = "https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.85/+esm";
 const DEMO = new URLSearchParams(location.search).has("demo");
 
@@ -636,7 +636,29 @@ async function checkDevice() {
   return true;
 }
 
+async function storageLine() {
+  try {
+    const e = await navigator.storage.estimate();
+    return `Storage: using ${(e.usage / 1e9).toFixed(2)} GB of ${(e.quota / 1e9).toFixed(1)} GB allowed.`;
+  } catch { return ""; }
+}
+async function resetEverything() {
+  $("resetBtn").disabled = true; $("resetBtn").textContent = "Clearing…";
+  try { for (const k of await caches.keys()) await caches.delete(k); } catch {}
+  await deleteIDB(OLD_STORES);
+  try { for (const d of (await indexedDB.databases?.()) || []) if (d.name) await deleteIDB([d.name]); } catch {}
+  await clearOPFS();
+  try { for (const r of await navigator.serviceWorker.getRegistrations()) await r.unregister(); } catch {}
+  const keep = { history: ls.get("history", []), prompt: S.prompt, voice: S.voice, speed: S.speed, mode: S.mode };
+  try { localStorage.clear(); } catch {}
+  for (const [k, v] of Object.entries(keep)) ls.set(k, v);
+  ls.set("ears", SR ? "dictation" : EARS[0].id);
+  location.reload();
+}
+$("resetBtn").onclick = resetEverything;
+
 async function boot() {
+  $("verLabel").textContent = "Halo Go " + VERSION;
   renderHistory();
   setMode(S.mode, false);
   requestAnimationFrame(animate);
@@ -680,6 +702,8 @@ async function start() {
     btn.disabled = false;
     btn.textContent = "Try again";
     const msg = String(e.message || e);
+    $("resetBtn").style.display = "";
+    storageLine().then((t) => { if (t) $("verLabel").textContent = `Halo Go ${VERSION} · ${t}`; });
     $("dlNote").textContent = /quota|space|Indexed Database|NotReadable|NoModificationAllowed/i.test(msg)
       ? "The iPhone couldn't save the download (" + msg + "). Check there's at least 2 GB free in Settings → General → iPhone Storage, then try again."
       : "Something went wrong: " + msg + ". Check Wi-Fi for the first download, then try again.";
