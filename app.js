@@ -1,10 +1,12 @@
 // Halo Go — offline voice AI that runs entirely on an iPhone (Safari / iOS 26+, WebGPU).
 // Ears: Whisper (transformers.js, in a worker)  Brain: WebLLM (WebGPU, in a worker)  Voice: iOS speech.
-const VERSION = "1.0.1";
+const VERSION = "1.0.2";
 const WEBLLM = "https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.85/+esm";
 const DEMO = new URLSearchParams(location.search).has("demo");
 
 const MODELS = [
+  { key: "tiny", name: "Tiny", desc: "SmolLM2 360M · about 0.4 GB · lightest, simpler answers",
+    f16: "SmolLM2-360M-Instruct-q4f16_1-MLC", f32: "SmolLM2-360M-Instruct-q4f32_1-MLC", gb: 0.4 },
   { key: "quick", name: "Quick", desc: "Llama 3.2 1B · about 0.9 GB · fastest replies",
     f16: "Llama-3.2-1B-Instruct-q4f16_1-MLC", f32: "Llama-3.2-1B-Instruct-q4f32_1-MLC", gb: 0.9 },
   { key: "balanced", name: "Balanced", desc: "Gemma 2 2B · about 1.6 GB · smarter, a little slower",
@@ -99,20 +101,35 @@ async function loadBrain(key, onProgress) {
   const id = modelId(key);
   if (DEMO) { await fakeProgress(onProgress, 1200); engine = makeDemoEngine(); engineModel = id; return; }
   const webllm = await import(WEBLLM);
-  ls.set("loading", key);                         // if iOS runs out of memory, we'll know next launch
-  const cb = (r) => onProgress && onProgress(r.progress || 0, r.text || "");
+  // If Safari closes the page while loading (usually low memory), we'll know where on the next launch
+  ls.set("loading", { key, step: "starting", pct: 0 });
+  let lastSave = 0;
+  const cb = (r) => {
+    const pct = Math.round((r.progress || 0) * 100);
+    if (Date.now() - lastSave > 700) { lastSave = Date.now(); ls.set("loading", { key, step: shortStep(r.text || ""), pct }); }
+    onProgress && onProgress(r.progress || 0, r.text || "");
+  };
+  // smaller working memory: plenty for short spoken chats (the "-1k" builds are already small)
+  const chatOpts = /-1k$/.test(id) ? undefined : { context_window_size: 2048 };
   try {
     if (!engine) {
       const w = new Worker(new URL("./llm-worker.js", import.meta.url), { type: "module" });
-      engine = await webllm.CreateWebWorkerMLCEngine(w, id, { initProgressCallback: cb, appConfig: await getAppConfig() });
+      engine = await webllm.CreateWebWorkerMLCEngine(w, id, { initProgressCallback: cb, appConfig: await getAppConfig() }, chatOpts);
     } else {
       engine.setInitProgressCallback?.(cb);
-      await engine.reload(id);
+      await engine.reload(id, chatOpts);
     }
     engineModel = id;
   } finally {
     ls.set("loading", null);
   }
+}
+function shortStep(t) {
+  if (/fetch|download/i.test(t) && !/cache/i.test(t)) return "downloading";
+  if (/cache/i.test(t)) return "loading from storage";
+  if (/shader|compil|gpu|webgpu/i.test(t)) return "preparing the graphics chip";
+  if (/tokenizer/i.test(t)) return "loading the tokenizer";
+  return t.slice(0, 40) || "starting";
 }
 async function brainCached(key) {
   if (DEMO) return ls.get("demo_cached", false);
@@ -452,7 +469,7 @@ async function switchEars(id) {
 let waitingSW = null;
 function showUpdate(w) {
   waitingSW = w;
-  if (!$("gate").classList.contains("hidden") || state === "off") { w.postMessage("skipWaiting"); return; }
+  if ((!$("gate").classList.contains("hidden") || state === "off") && !starting) { w.postMessage("skipWaiting"); return; }
   $("updChip").style.display = "";
 }
 $("updChip").onclick = () => { if (waitingSW) waitingSW.postMessage("skipWaiting"); };
@@ -468,9 +485,10 @@ if ("serviceWorker" in navigator && !DEMO) {
     if (navigator.onLine) reg.update().catch(() => {});
   }).catch(() => {});
   let reloading = false;
+  const hadController = !!navigator.serviceWorker.controller;   // first install also fires this; ignore it
   navigator.serviceWorker.addEventListener("controllerchange", () => {
-    if (reloading) return;
-    if (!$("gate").classList.contains("hidden")) { reloading = true; location.reload(); }   // safe: not chatting yet
+    if (reloading || !hadController) return;
+    if (!$("gate").classList.contains("hidden") && !starting) { reloading = true; location.reload(); }   // safe: not set up yet
     else { $("updChip").style.display = ""; $("updChip").onclick = () => location.reload(); }  // let the user choose
   });
 }
@@ -512,10 +530,22 @@ async function checkDevice() {
     return false;
   }
   // Did the last launch run out of memory loading a big brain?
-  const crashed = ls.get("loading", null);
-  if (crashed && crashed !== "quick") {
-    ls.set("loading", null); save("model", "quick");
-    box.innerHTML = `The <b>${modelInfo(crashed).name}</b> brain was too big for this iPhone, so Halo Go switched back to <b>Quick</b>.`;
+  let crashed = ls.get("loading", null);
+  if (typeof crashed === "string") crashed = { key: crashed, step: "loading", pct: 0 };
+  if (crashed && crashed.key) {
+    ls.set("loading", null);
+    const order = ["big", "balanced", "quick", "tiny"];
+    const next = order[Math.min(order.length - 1, order.indexOf(crashed.key) + 1)] || "tiny";
+    const where = `${crashed.step}${crashed.pct ? ", " + crashed.pct + "%" : ""}`;
+    if (crashed.key !== "tiny") {
+      save("model", next);
+      box.innerHTML = `Safari closed Halo Go while loading the <b>${modelInfo(crashed.key).name}</b> brain (${esc(where)}). ` +
+        `That usually means the iPhone ran low on memory, so Halo Go switched to the smaller <b>${modelInfo(next).name}</b> brain. ` +
+        `Tip: close other apps and Safari tabs first. You can switch brains later in Settings.`;
+    } else {
+      box.classList.add("bad");
+      box.innerHTML = `Safari closed Halo Go while loading even the Tiny brain (${esc(where)}). Restart the iPhone (to free memory) and try again.`;
+    }
   } else {
     box.innerHTML = "This iPhone can run Halo Go. 👍";
   }
@@ -535,9 +565,11 @@ async function boot() {
   btn.onclick = start;
 }
 
+let starting = false;
 async function start() {
   const btn = $("startBtn");
   btn.disabled = true;
+  starting = true;
   // These must happen right inside the tap (iOS rules for sound and microphone)
   ctx = new (window.AudioContext || window.webkitAudioContext)();
   if ("speechSynthesis" in window) { const u = new SpeechSynthesisUtterance(" "); u.volume = 0; speechSynthesis.speak(u); }
@@ -548,16 +580,18 @@ async function start() {
   const bar = (id, p, txt) => { $(id).style.width = Math.round(p * 100) + "%"; $(id + "Txt").textContent = txt; };
   try {
     await micReady;
-    await Promise.all([
-      startEars((p, total) => bar("dlEars", p, p >= 1 ? "ready" : total ? `${Math.round(p * 100)}% of ${(total / 1e6).toFixed(0)} MB` : "starting…")),
-      loadBrain(S.model, (p, text) => bar("dlBrain", p, p >= 1 ? "ready" : /cache/i.test(text) ? `waking up… ${Math.round(p * 100)}%` : `${Math.round(p * 100)}%`)),
-    ]);
+    // One at a time keeps the iPhone's memory use lower
+    await loadBrain(S.model, (p, text) => bar("dlBrain", p, p >= 1 ? "ready" : `${shortStep(text)}… ${Math.round(p * 100)}%`));
+    bar("dlBrain", 1, "ready");
+    await startEars((p, total) => bar("dlEars", p, p >= 1 ? "ready" : total ? `${Math.round(p * 100)}% of ${(total / 1e6).toFixed(0)} MB` : "starting…"));
     bar("dlEars", 1, "ready"); bar("dlBrain", 1, "ready");
     if (DEMO) ls.set("demo_cached", true);
     $("gate").classList.add("hidden");
+    starting = false;
     setState("idle");
     if (!history.length) note(`Ready · ${modelInfo(S.model).name} brain · everything runs on this iPhone`);
   } catch (e) {
+    starting = false;
     btn.disabled = false;
     btn.textContent = "Try again";
     $("dlNote").textContent = "Something went wrong: " + (e.message || e) + ". Check Wi-Fi for the first download, then try again.";
